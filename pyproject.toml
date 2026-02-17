@@ -1,0 +1,24 @@
+[project]
+name = "oi-coding"
+version = "0.1.0"
+description = "HUD evaluation template for OI-style algorithmic challenges"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "hud-python>=0.5.22",
+    "requests>=2.31.0",
+    "flask>=3.0.0",
+]
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["hud_controller", "hud_controller.problems", "hud_controller.tools"]
+
+[tool.setuptools.package-dir]
+hud_controller = "src/hud_controller"
+
+[tool.uv]
+package = true

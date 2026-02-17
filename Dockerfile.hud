@@ -1,0 +1,101 @@
+# syntax=docker/dockerfile:1
+# Minimal Docker image for OI-style algorithmic challenges
+FROM ubuntu:24.04 AS setup
+
+RUN apt-get update -y \
+  && apt-get install -y --no-install-recommends \
+  bash \
+  build-essential \
+  ca-certificates \
+  curl \
+  g++ \
+  gcc \
+  git \
+  make \
+  python-is-python3 \
+  python3 \
+  python3-dev \
+  python3-pip \
+  python3-venv \
+  sudo \
+  && apt-get clean \
+  && rm -rf /var/lib/apt/lists/*
+
+RUN pip install uv --break-system-packages
+
+# Create agent user and grader user (for secure grading)
+RUN id ubuntu &>/dev/null || useradd -m -s /bin/bash ubuntu
+RUN useradd -r -s /usr/sbin/nologin grader
+
+# Restricted sudo: ubuntu can ONLY run the grading server as grader
+RUN echo 'ubuntu ALL=(grader) NOPASSWD: /mcp_server/.venv/bin/python -m hud_controller.grading_server' > /etc/sudoers.d/ubuntu \
+  && chmod 0440 /etc/sudoers.d/ubuntu
+
+USER ubuntu
+ENV HOME=/home/ubuntu
+RUN git config --global user.email "agent@example.com" \
+  && git config --global user.name "Agent"
+
+USER root
+RUN mkdir -p /problems /workdir \
+  && chown -R ubuntu:ubuntu /problems /workdir
+
+ARG MCP_TESTING_MODE="1"
+ENV MCP_TESTING_MODE=${MCP_TESTING_MODE}
+
+# ========================= RUNTIME =========================
+FROM setup AS runtime
+
+# MCP server dependencies
+COPY ./pyproject.toml /mcp_server/pyproject.toml
+COPY ./uv.lock /mcp_server/uv.lock
+COPY ./README.md /mcp_server/README.md
+COPY ./src /mcp_server/src
+WORKDIR /mcp_server
+
+RUN uv venv && . .venv/bin/activate && uv sync --no-install-project && uv pip install -e .
+
+ENV PYTHONPATH=/mcp_server/.venv/lib/python3.12/site-packages:/mcp_server/src:/mcp_server
+ENV PATH=/mcp_server/.venv/bin:/home/ubuntu/.local/bin:$PATH
+
+# Secure grading setup: copy problems, split inputs (public) and outputs (grader-only)
+RUN mkdir -p /grading/inputs /grading/outputs \
+  && chown -R grader:grader /grading \
+  && chmod 700 /grading
+
+COPY --chown=root:root problems/ /tmp/problems_staging/
+
+RUN for problem_dir in /tmp/problems_staging/*/; do \
+      problem_id=$(basename "$problem_dir"); \
+      if [ -d "$problem_dir/input" ]; then \
+        mkdir -p "/grading/inputs/$problem_id" "/grading/outputs/$problem_id"; \
+        cp -r "$problem_dir/input/"* "/grading/inputs/$problem_id/" 2>/dev/null || true; \
+        cp -r "$problem_dir/output/"* "/grading/outputs/$problem_id/" 2>/dev/null || true; \
+        mkdir -p "/problems/$problem_id/input"; \
+        cp -r "$problem_dir/input/"* "/problems/$problem_id/input/" 2>/dev/null || true; \
+      fi; \
+    done \
+  && rm -rf /tmp/problems_staging \
+  && chown -R grader:grader /grading \
+  && chmod -R 700 /grading \
+  && chown -R ubuntu:ubuntu /problems \
+  && chmod -R 755 /problems
+
+# Copy v5 environment files
+COPY ./env.py /mcp_server/env.py
+COPY ./tasks /mcp_server/tasks
+COPY --chmod=755 src/hud_controller/entrypoint.sh /entrypoint.sh
+
+# Security: agent cannot read grading logic or scenario internals
+RUN chmod 700 /mcp_server/env.py /mcp_server/tasks
+
+WORKDIR /workdir
+
+ENV PROBLEM_ID=""
+ENV GRADING_DIR="/grading"
+ENV GRADING_HOST="127.0.0.1"
+ENV GRADING_PORT="5000"
+ENV _HUD_DEV_CHILD=1
+
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["hud", "dev", "env:env", "--stdio"]
